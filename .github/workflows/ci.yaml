@@ -1,38 +1,8 @@
-# ─────────────────────────────────────────────────────────────────
-# Planck library CI — GitHub Actions
-# ─────────────────────────────────────────────────────────────────
-# Drop a copy of this file at .github/workflows/ci.yml in each
-# library repo (proto, tls, utils, wasmer-zig-api, zeish, zeishex,
-# schnelldb-zig-client, …). Mirrors the previous .gitlab-ci.yml.
-#
-# What it does:
-#   - Push to main / PR / tag push: install zig, run `zig build test`
-#     across Linux / macOS / Windows.
-#   - On tag push (vX.Y.Z): also create a GitHub Release pointing at
-#     the auto-generated source archive so consumers can pin to it.
-#
-# Consumer repos reference this library via their build.zig.zon:
-#
-#   .dependencies = .{
-#       .<name> = .{
-#           .url = "https://github.com/<owner>/<name>/archive/refs/tags/v0.1.0.tar.gz",
-#           .hash = "...",  # added by `zig fetch --save`
-#       },
-#   },
-#
-# Trim the matrix to `ubuntu-latest` only on platform-agnostic libs
-# (e.g. pure Zig with no system-dep glue) to save private-repo
-# minutes. Keep the full matrix for libs that touch sockets, TLS,
-# WASM, or platform-specific syscalls.
-
 name: CI
 
 on:
   push:
-    branches: [main]
     tags: ["v*.*.*"]
-  pull_request:
-    branches: [main]
 
 env:
   ZIG_VERSION: "0.16.0"
@@ -50,9 +20,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: ${{ env.ZIG_VERSION }}
+      - name: Install Zig (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   ZIG_ARCH="x86_64-linux" ;;
+            Linux-aarch64)  ZIG_ARCH="aarch64-linux" ;;
+            Darwin-arm64)   ZIG_ARCH="aarch64-macos" ;;
+            Darwin-x86_64)  ZIG_ARCH="x86_64-macos" ;;
+          esac
+          curl -sL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" | tar xJ
+          echo "$(pwd)/zig-${ZIG_ARCH}-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Install Zig (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://ziglang.org/download/${env:ZIG_VERSION}/zig-x86_64-windows-${env:ZIG_VERSION}.zip"
+          Invoke-WebRequest -Uri $url -OutFile zig.zip
+          Expand-Archive zig.zip -DestinationPath .
+          "$(Get-Location)\zig-x86_64-windows-${env:ZIG_VERSION}" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Verify Zig
+        run: zig version
 
       - name: Build
         run: zig build
