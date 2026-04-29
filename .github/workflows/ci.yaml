@@ -1,0 +1,103 @@
+# ─────────────────────────────────────────────────────────────────
+# Planck library CI — GitHub Actions
+# ─────────────────────────────────────────────────────────────────
+# Drop a copy of this file at .github/workflows/ci.yml in each
+# library repo (proto, tls, utils, wasmer-zig-api, zeish, zeishex,
+# schnelldb-zig-client, …). Mirrors the previous .gitlab-ci.yml.
+#
+# What it does:
+#   - Push to main / PR / tag push: install zig, run `zig build test`
+#     across Linux / macOS / Windows.
+#   - On tag push (vX.Y.Z): also create a GitHub Release pointing at
+#     the auto-generated source archive so consumers can pin to it.
+#
+# Consumer repos reference this library via their build.zig.zon:
+#
+#   .dependencies = .{
+#       .<name> = .{
+#           .url = "https://github.com/<owner>/<name>/archive/refs/tags/v0.1.0.tar.gz",
+#           .hash = "...",  # added by `zig fetch --save`
+#       },
+#   },
+#
+# Trim the matrix to `ubuntu-latest` only on platform-agnostic libs
+# (e.g. pure Zig with no system-dep glue) to save private-repo
+# minutes. Keep the full matrix for libs that touch sockets, TLS,
+# WASM, or platform-specific syscalls.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+permissions:
+  contents: write # needed by the release job to create a Release
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        # Skips gracefully if the library's build.zig has no `test` step.
+        shell: bash
+        run: |
+          if zig build --help 2>&1 | grep -qE '^\s+test\b'; then
+            zig build test
+          else
+            echo "No 'test' step in build.zig — skipping."
+          fi
+
+  # ── Release (tag push only) ────────────────────────────────────
+  # Creates a GitHub Release tied to the tag. GitHub automatically
+  # publishes the source archive at:
+  #   https://github.com/<owner>/<repo>/archive/refs/tags/<tag>.tar.gz
+  # which is exactly what consumers reference in their build.zig.zon.
+  # No assets to upload — the archive URL is enough.
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          generate_release_notes: true
+          body: |
+            Consume in your `build.zig.zon`:
+
+            ```bash
+            zig fetch --save=${{ github.event.repository.name }} ${{ github.server_url }}/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz
+            ```
+
+            That writes the entry below into `build.zig.zon` with the correct hash:
+
+            ```zig
+            .${{ github.event.repository.name }} = .{
+                .url = "${{ github.server_url }}/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz",
+                .hash = "...",
+            },
+            ```
